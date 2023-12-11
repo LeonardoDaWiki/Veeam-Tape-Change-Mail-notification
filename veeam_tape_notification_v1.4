@@ -1,0 +1,122 @@
+###########################################
+#                                         #
+#   Veeam Tape Change Mail notification   #
+#                                         #
+###########################################
+# created by Jonathan Switlinski 06/03/20 #
+###########################################
+# changed by Jonathan Switlinski 11/12/23 #
+###########################################
+#    v1.4    #
+##############
+
+# Add Veeam Powershell Plugin
+	Import-Module Veeam.Backup.PowerShell
+
+# Find tapes that are "Offline" and "Expired"
+	$VBRTapeMediaPools = Get-VBRTapeMediaPool
+	$VBRTapeMediaPool_Name = $args[0]
+	$VBRTapeMediaPool = $VBRTapeMediaPools | ? Name -eq $VBRTapeMediaPool_Name
+	$VBRTapeMediaPool_ID = $VBRTapeMediaPool.Id
+
+	$VBRTapes = Get-VBRTapeMedium | ? MediaPoolId -eq $VBRTapeMediaPool_ID
+
+	$TapeList = $VBRTapes | Where {($_.IsExpired -eq $True) -and ($_.Location -notlike "Slot*")} | Sort-Object {$_.ExpirationDate}
+	# | Format-Table -autosize -property {$_.Barcode}, {$_.isexpired}, {$_.expirationdate} #Get expired tapes
+
+	$TapesOut = $VBRTapes | Where {($_.ExpirationDate -gt (Get-Date)) -and ($_.Location -Like "Slot*")} | Sort-Object {$_.Barcode}
+	# | Format-Table -autosize -property {$_.Barcode}, {$_.isexpired}, {$_.expirationdate} {$_.location} #Get expired tapes
+
+
+# Output message if no tapes are available
+	If ($TapeList.Count -eq 0) {
+		$TapeList = New-Object PSObject 
+		$TapeList | Add-Member -Type NoteProperty -Name Barcode -Value "No free tapes available!"
+	}
+
+# Search tapes
+	$Tapes = $VBRTapes | Where {($_.ExpirationDate -gt (Get-Date) -and $_.Location -like "Slot" -or $_.Location -like "Drive")} | Sort-Object {$_.Barcode}
+
+$head=@"
+<style>
+@charset "UTF-8";
+
+#content {
+width:75%;
+border:0px solid #FFFFFF;
+padding-left:40px;
+font-family:Arial;
+}
+ 
+h2 {
+	color:#000000;
+}
+
+h3 {
+	color:#000000;
+	font-size:x-large;
+    font-family:Arial;
+}
+
+p {
+	font-size:large;
+	font-weight: bold;
+	padding-bottom: 0px;
+    font-family:Arial;
+}
+
+.red {
+	color:#FF6600;
+	font-size:medium;
+	font-weight: bold;
+	padding-bottom: 0px;
+    font-family:Arial;
+}
+
+.green {
+	color:#33FF66;
+	font-size:medium;
+	font-weight: bold;
+	padding-bottom: 0px;
+    font-family:Arial;
+}
+
+table {
+    border-collapse: collapse;
+    width: 100%;
+    font-family:Arial;
+}
+
+th, td {
+    text-align: left;
+    padding: 8px;
+    font-family:Arial;
+}
+
+tr:nth-child(odd){background-color: #33CCFF}
+
+th {
+    background-color: #D8D8D8;
+    color: white;
+    font-family:Arial;
+}
+
+</style>
+"@
+
+$htmlbody = $TapesOut | Select @{Name="Tape Barcode";Expression={$_.Barcode}},@{Name="Expiration Date";Expression={$_.ExpirationDate}},@{Name="Expired Status";Expression={$_.IsExpired}},@{Name="Slot";Expression={$_.Location.SlotAddress+1}},@{Name="Library";Expression={$_.TapeLibrary}} | ConvertTo-HTML -Head $head -PreContent "<div id=""content"" class=""transparent""><H1>Tapes to Change for Pool: $VBRTapeMediaPool_Name</H1><div class=""red"">Tapes going out (to Offsite): $($tapes.count) <p></div>" -PostContent "</div>"| out-string
+
+$htmlbody += $tapeList | Select @{Name="Tape Barcode";Expression={$_.Barcode}},@{Name="Expiration Date";Expression={$_.ExpirationDate}},@{Name="Expired Status";Expression={$_.IsExpired}} | ConvertTo-HTML -Head $head -PreContent "<div id=""content"" class=""transparent""><p><div class=""green"">Tapes coming in (from Offsite): $($tapeList.count) <p></div>" -PostContent "</div>"| out-string
+
+$htmlbody += ConvertTo-Html ConvertTo-HTML -Head $head -PreContent "<div id=""content"" class=""transparent""><h5>$(date)</h5>" -PostContent "</div>"| out-string
+
+# Send mail
+	$sendMailMessageSplat = @{
+		From = '<Office365 Mail Address>'
+		To = '"First receiver" <First Mail Address>', '"Second receiver" <Second Mail Address>''
+		Subject = "Tape Change $(date)"
+		Body = $htmlbody
+		Priority = 'High'
+		SmtpServer = '<Office365 Smarthost>'
+	}
+	Send-MailMessage -BodyAsHtml @sendMailMessageSplat
